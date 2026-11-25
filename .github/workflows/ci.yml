@@ -1,0 +1,107 @@
+name: CI - Citizen Registry
+
+# Εκτέλεση ΜΟΝΟ σε commits (push) στο κλαδί develop
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check-out κώδικα
+        uses: actions/checkout@v4
+
+      - name: Εγκατάσταση JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Μεταγλώττιση
+        run: mvn -B clean compile test-compile
+
+      - name: Δοκιμές μονάδων (unit tests - Surefire)
+        run: mvn -B test
+
+      - name: Αναφορά δοκιμών μονάδων (HTML)
+        if: always()
+        run: mvn -B surefire-report:report-only -DlinkXRef=false -DskipTests || true
+
+      - name: Μεταφόρτωση αναφορών δοκιμών μονάδων
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: |
+            **/target/surefire-reports/
+            **/target/site/surefire-report.html
+            **/target/reports/surefire.html
+          if-no-files-found: warn
+
+      - name: Δοκιμές API / ενοποίησης (integration tests - Failsafe)
+        # -Dtest=NONE: παράλειψη των unit tests (έχουν ήδη τρέξει), τρέχουν μόνο τα *IT
+        run: mvn -B verify -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
+
+      - name: Αναφορά δοκιμών ενοποίησης (HTML)
+        if: always()
+        run: mvn -B surefire-report:failsafe-report-only -DlinkXRef=false -DskipTests || true
+
+      - name: Μεταφόρτωση αναφορών δοκιμών ενοποίησης
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-reports
+          path: |
+            **/target/failsafe-reports/
+            **/target/site/failsafe-report.html
+            **/target/reports/failsafe.html
+          if-no-files-found: warn
+
+      - name: Συλλογή εκτελέσιμων (JAR)
+        run: |
+          mkdir -p dist
+          find . -path '*/target/*.jar' ! -path './dist/*' \
+               ! -name '*-sources.jar' ! -name '*-javadoc.jar' ! -name '*-tests.jar' \
+               -exec cp {} dist/ \;
+          ls -la dist
+
+      - name: Μεταφόρτωση εκτελέσιμων
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-jars
+          path: dist/*.jar
+
+  # Προαιρετικό: πρώιμη έκδοση (pre-release) στο Releases του αποθετηρίου
+  pre-release:
+    name: Pre-release στο GitHub Releases
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Λήψη εκτελέσιμων από το προηγούμενο job
+        uses: actions/download-artifact@v4
+        with:
+          name: application-jars
+          path: dist
+
+      - name: Δημιουργία pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-build-${{ github.run_number }}
+          name: Development build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          body: |
+            Αυτόματη πρώιμη έκδοση από το κλαδί develop.
+            Commit: ${{ github.sha }}
+          files: dist/*.jar
